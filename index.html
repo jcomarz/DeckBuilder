@@ -153,7 +153,9 @@
     <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="contentType" value="tv"> 📺 TV show (show / season / episode / character)</label>
   </div>
   <div class="row" style="margin-top:12px;">
-    <div><label id="deckNameLabel">Deck / artist name</label><input type="text" id="deckName" placeholder="e.g. aespa"></div>
+    <div><label id="deckNameLabel">Deck / artist name</label><input type="text" id="deckName" placeholder="e.g. aespa">
+      <div class="status" id="currentDeckIdStatus" style="margin-top:4px;"></div>
+    </div>
   </div>
   <div class="row">
     <button class="secondary" id="newDeckBtn" type="button">New deck</button>
@@ -396,6 +398,11 @@ let tracksData = [];
 let members = [];
 let pool = [];
 let deckId = null;
+function updateDeckIdStatus(){
+  $('currentDeckIdStatus').textContent = deckId
+    ? 'Editing deck id: ' + deckId + ' — publishing updates this exact deck. Click "New deck" if you meant to start something different.'
+    : 'No deck loaded yet — publishing will create a brand new deck id.';
+}
 let pasteTargetId = null;
 let cloudActive = false;
 
@@ -1370,7 +1377,7 @@ $('newDeckBtn').addEventListener('click', async () => {
   $('artistName').value = '';
   tracksData = [];
   $('tracksWrap').style.display = 'none';
-  renderMembers(); renderPoolCount();
+  renderMembers(); renderPoolCount(); updateDeckIdStatus();
   $('deckStatus').textContent = 'New deck started.';
 });
 $('loadDeckBtn').addEventListener('click', () => $('loadDeckFile').click());
@@ -1386,7 +1393,7 @@ $('loadDeckFile').addEventListener('change', async e => {
   for(const p of pool) await idbPut('pool', p);
   await setMeta('deckId', deckId);
   $('deckName').value = payload.artistName || '';
-  renderMembers(); renderPoolCount();
+  renderMembers(); renderPoolCount(); updateDeckIdStatus();
   $('deckStatus').textContent = 'Loaded deck: ' + (payload.artistName||'') + ' (' + pool.length + ' entries, ' + members.length + ' members).';
   $('loadDeckFile').value = '';
 });
@@ -1396,19 +1403,66 @@ $('loadFromCloudBtn').addEventListener('click', async () => {
   try{
     cloudDeckCandidates = await CloudStore.getAll('decks');
     if(cloudDeckCandidates.length === 0){ $('deckStatus').textContent = 'No decks published to Firebase yet.'; return; }
-    const wrap = $('cloudDeckPicker');
-    wrap.innerHTML = '';
-    cloudDeckCandidates.forEach((d, i) => {
-      const el = document.createElement('div');
-      el.className = 'showPickItem';
-      el.innerHTML = `<div class="spInfo"><div class="spTitle">${escapeHtml(d.artistName)}</div><div class="spMeta">deck id: ${escapeHtml(d.deckId)}</div></div>`;
-      el.addEventListener('click', () => loadDeckFromCloud(i));
-      wrap.appendChild(el);
-    });
-    wrap.style.display = 'block';
-    $('deckStatus').textContent = cloudDeckCandidates.length + ' deck(s) found — pick one to load for editing.';
+    renderCloudDeckPicker();
+    $('deckStatus').textContent = cloudDeckCandidates.length + ' deck(s) found — pick one to load for editing, or rename/delete.';
   }catch(e){ $('deckStatus').textContent = 'Failed to fetch: ' + e.message; }
 });
+function renderCloudDeckPicker(){
+  const wrap = $('cloudDeckPicker');
+  wrap.innerHTML = '';
+  cloudDeckCandidates.forEach((d, i) => {
+    const el = document.createElement('div');
+    el.className = 'showPickItem';
+    el.style.alignItems = 'center';
+    el.innerHTML = `
+      <div class="spInfo" style="cursor:pointer;"><div class="spTitle">${escapeHtml(d.artistName)}</div><div class="spMeta">deck id: ${escapeHtml(d.deckId)}</div></div>
+      <div style="display:flex;gap:6px;flex:none;">
+        <button class="secondary small" data-act="rename" data-i="${i}" type="button">🏷️ Rename ID</button>
+        <button class="danger small" data-act="delete" data-i="${i}" type="button">🗑️ Delete</button>
+      </div>
+    `;
+    el.querySelector('.spInfo').addEventListener('click', () => loadDeckFromCloud(i));
+    el.querySelector('[data-act="rename"]').addEventListener('click', e => { e.stopPropagation(); renameCloudDeck(i); });
+    el.querySelector('[data-act="delete"]').addEventListener('click', e => { e.stopPropagation(); deleteCloudDeck(i); });
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'block';
+}
+async function renameCloudDeck(i){
+  const d = cloudDeckCandidates[i];
+  const newName = prompt('New display name for this deck (this also generates a fresh, matching deck ID — the old ID gets retired):', d.artistName);
+  if(!newName || !newName.trim()) return;
+  const newId = slug(newName.trim()) + '_' + Date.now();
+  $('deckStatus').textContent = 'Migrating "' + d.artistName + '" to a new ID...';
+  try{
+    const oldMembers = await CloudStore.getAll('decks/' + d.deckId + '/members');
+    const oldPool = await CloudStore.getAll('decks/' + d.deckId + '/pool');
+    await CloudStore.put('decks', { id: newId, deckId: newId, artistName: newName.trim(), createdAt: new Date().toISOString() });
+    for(const m of oldMembers) await CloudStore.put('decks/' + newId + '/members', m);
+    for(const p of oldPool) await CloudStore.put('decks/' + newId + '/pool', p);
+    await CloudStore.clearCollection('decks/' + d.deckId + '/pool');
+    await CloudStore.clearCollection('decks/' + d.deckId + '/members');
+    await CloudStore.del('decks', d.deckId);
+    if(deckId === d.deckId){ deckId = newId; await setMeta('deckId', deckId); $('deckName').value = newName.trim(); updateDeckIdStatus(); }
+    $('deckStatus').textContent = 'Renamed to "' + newName.trim() + '" — new deck id: ' + newId + '. Old id (' + d.deckId + ') retired.';
+    cloudDeckCandidates = await CloudStore.getAll('decks');
+    renderCloudDeckPicker();
+  }catch(e){ $('deckStatus').textContent = 'Rename failed: ' + e.message; }
+}
+async function deleteCloudDeck(i){
+  const d = cloudDeckCandidates[i];
+  const typed = prompt('This permanently deletes "' + d.artistName + '" (id: ' + d.deckId + ') from the cloud. Type the deck name exactly to confirm:');
+  if(typed !== d.artistName){ if(typed !== null) alert('Name didn\'t match — nothing was deleted.'); return; }
+  $('deckStatus').textContent = 'Deleting "' + d.artistName + '"...';
+  try{
+    await CloudStore.clearCollection('decks/' + d.deckId + '/pool');
+    await CloudStore.clearCollection('decks/' + d.deckId + '/members');
+    await CloudStore.del('decks', d.deckId);
+    $('deckStatus').textContent = 'Deleted "' + d.artistName + '" from the cloud.';
+    cloudDeckCandidates = await CloudStore.getAll('decks');
+    renderCloudDeckPicker();
+  }catch(e){ $('deckStatus').textContent = 'Delete failed: ' + e.message; }
+}
 async function loadDeckFromCloud(i){
   const d = cloudDeckCandidates[i];
   if(!confirm('Load "' + d.artistName + '" for editing? This replaces the current members and pool in the builder. Re-publishing afterward updates this same cloud deck, it will not create a duplicate.')) return;
@@ -1423,15 +1477,24 @@ async function loadDeckFromCloud(i){
     await setMeta('deckId', deckId);
     $('deckName').value = d.artistName;
     $('cloudDeckPicker').style.display = 'none';
-    renderMembers(); renderPoolCount();
-    $('deckStatus').textContent = 'Loaded "' + d.artistName + '" from the cloud — ' + members.length + ' members, ' + pool.length + ' pool entries.';
+    renderMembers(); renderPoolCount(); updateDeckIdStatus();
+    $('deckStatus').textContent = 'Loaded "' + d.artistName + '" from the cloud (id: ' + deckId + ', locked to this deck until you hit New Deck) — ' + members.length + ' members, ' + pool.length + ' pool entries.';
   }catch(e){ $('deckStatus').textContent = 'Load failed: ' + e.message; }
 }
 $('publishDeckBtn').addEventListener('click', async () => {
   const artistNameVal = $('deckName').value.trim() || 'untitled-deck';
+  const isNewDeck = !deckId;
   if(!deckId) deckId = slug(artistNameVal) + '_' + Date.now();
   $('deckStatus').textContent = 'Publishing to Firebase...';
   try{
+    // clear old subcollection contents first — this is what actually prevents the "merge" bug:
+    // without this, republishing under a reused deckId just adds new entries alongside whatever
+    // was there before instead of replacing it
+    if(!isNewDeck){
+      $('deckStatus').textContent = 'Clearing previous version of this deck...';
+      await CloudStore.clearCollection('decks/' + deckId + '/members');
+      await CloudStore.clearCollection('decks/' + deckId + '/pool');
+    }
     // deck doc itself stays tiny — members and pool both live in subcollections so
     // a document with lots of member photos or lots of tracks never hits Firestore's 1MB limit
     await CloudStore.put('decks', { id: deckId, deckId, artistName: artistNameVal, createdAt: new Date().toISOString() });
@@ -1448,7 +1511,8 @@ $('publishDeckBtn').addEventListener('click', async () => {
       if(done % 50 === 0) $('deckStatus').textContent = 'Publishing pool... ' + done + ' / ' + pool.length + ' entries';
     }
     await setMeta('deckId', deckId);
-    $('deckStatus').textContent = 'Published "' + artistNameVal + '" to the cloud — ' + members.length + ' members, ' + pool.length + ' pool entries. It will appear in Card Collection automatically on any signed-in device.';
+    updateDeckIdStatus();
+    $('deckStatus').textContent = 'Published "' + artistNameVal + '" (id: ' + deckId + ') — ' + members.length + ' members, ' + pool.length + ' pool entries. It will appear in Card Collection once someone browses and loads it there.';
   }catch(e){ $('deckStatus').textContent = 'Publish failed: ' + e.message; }
 });
 $('exportDeckBtn').addEventListener('click', () => {
@@ -1565,6 +1629,7 @@ $('editSave').addEventListener('click', async () => {
   loadCreds();
   renderMembers();
   renderPoolCount();
+  updateDeckIdStatus();
   updateCloudUI();
   const savedConfig = loadFirebaseConfig();
   if(savedConfig){
