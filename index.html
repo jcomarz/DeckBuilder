@@ -161,8 +161,10 @@
     <input type="file" id="loadDeckFile" accept="application/json" style="display:none;">
     <button id="exportDeckBtn" type="button">Export deck file</button>
     <button class="secondary" id="publishDeckBtn" type="button" style="display:none;">☁️ Publish to Firebase</button>
+    <button class="secondary" id="loadFromCloudBtn" type="button" style="display:none;">☁️ Load deck from Firebase</button>
   </div>
   <div class="status" id="deckStatus"></div>
+  <div id="cloudDeckPicker" style="display:none;margin-top:10px;"></div>
 </div>
 
 <div class="panel" id="credsPanel">
@@ -406,6 +408,7 @@ function updateCloudUI(){
   $('cloudSignedOut').style.display = (cloudActive && !signedIn) ? 'block' : 'none';
   $('cloudSignedIn').style.display = signedIn ? 'block' : 'none';
   $('publishDeckBtn').style.display = signedIn ? 'inline-block' : 'none';
+  $('loadFromCloudBtn').style.display = signedIn ? 'inline-block' : 'none';
   if(signedIn) $('cloudStatus').textContent = 'Connected — signed in as ' + CloudStore.userLabel() + '. Publishing writes straight to Firestore.';
   else if(cloudActive) $('cloudStatus').textContent = 'Connected to Firebase — sign in to publish decks.';
   else $('cloudStatus').textContent = 'Not connected — decks export as local files only. Connect Firebase to publish decks so they appear instantly in Card Collection on any device.';
@@ -1294,7 +1297,7 @@ $('selectNone').addEventListener('click', e => {e.preventDefault(); document.que
 
 // ---------------- pool (deck contents) ----------------
 async function mintPool(selectedIdx, mode){
-  const activeMembers = members.filter(m => m.include!==false && m.img);
+  const activeMembers = members.filter(m => m.include!==false && getMemberImgs(m).length > 0);
   if(activeMembers.length===0){ $('mintStatus').textContent='Upload at least one member face bubble.'; return; }
   if(selectedIdx.length===0){ $('mintStatus').textContent='No tracks to add.'; return; }
   $('mintBtn').disabled = true; $('mintAllBtn').disabled = true;
@@ -1387,6 +1390,43 @@ $('loadDeckFile').addEventListener('change', async e => {
   $('deckStatus').textContent = 'Loaded deck: ' + (payload.artistName||'') + ' (' + pool.length + ' entries, ' + members.length + ' members).';
   $('loadDeckFile').value = '';
 });
+let cloudDeckCandidates = [];
+$('loadFromCloudBtn').addEventListener('click', async () => {
+  $('deckStatus').textContent = 'Fetching your published decks...';
+  try{
+    cloudDeckCandidates = await CloudStore.getAll('decks');
+    if(cloudDeckCandidates.length === 0){ $('deckStatus').textContent = 'No decks published to Firebase yet.'; return; }
+    const wrap = $('cloudDeckPicker');
+    wrap.innerHTML = '';
+    cloudDeckCandidates.forEach((d, i) => {
+      const el = document.createElement('div');
+      el.className = 'showPickItem';
+      el.innerHTML = `<div class="spInfo"><div class="spTitle">${escapeHtml(d.artistName)}</div><div class="spMeta">deck id: ${escapeHtml(d.deckId)}</div></div>`;
+      el.addEventListener('click', () => loadDeckFromCloud(i));
+      wrap.appendChild(el);
+    });
+    wrap.style.display = 'block';
+    $('deckStatus').textContent = cloudDeckCandidates.length + ' deck(s) found — pick one to load for editing.';
+  }catch(e){ $('deckStatus').textContent = 'Failed to fetch: ' + e.message; }
+});
+async function loadDeckFromCloud(i){
+  const d = cloudDeckCandidates[i];
+  if(!confirm('Load "' + d.artistName + '" for editing? This replaces the current members and pool in the builder. Re-publishing afterward updates this same cloud deck, it will not create a duplicate.')) return;
+  $('deckStatus').textContent = 'Loading members and pool...';
+  try{
+    members = await CloudStore.getAll('decks/' + d.deckId + '/members');
+    pool = await CloudStore.getAll('decks/' + d.deckId + '/pool');
+    deckId = d.deckId;
+    await idbClear('members'); await idbClear('pool');
+    for(const m of members) await idbPut('members', m);
+    for(const p of pool) await idbPut('pool', p);
+    await setMeta('deckId', deckId);
+    $('deckName').value = d.artistName;
+    $('cloudDeckPicker').style.display = 'none';
+    renderMembers(); renderPoolCount();
+    $('deckStatus').textContent = 'Loaded "' + d.artistName + '" from the cloud — ' + members.length + ' members, ' + pool.length + ' pool entries.';
+  }catch(e){ $('deckStatus').textContent = 'Load failed: ' + e.message; }
+}
 $('publishDeckBtn').addEventListener('click', async () => {
   const artistNameVal = $('deckName').value.trim() || 'untitled-deck';
   if(!deckId) deckId = slug(artistNameVal) + '_' + Date.now();
