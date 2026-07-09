@@ -1392,12 +1392,20 @@ $('publishDeckBtn').addEventListener('click', async () => {
   if(!deckId) deckId = slug(artistNameVal) + '_' + Date.now();
   $('deckStatus').textContent = 'Publishing to Firebase...';
   try{
-    await CloudStore.put('decks', { id: deckId, deckId, artistName: artistNameVal, members, createdAt: new Date().toISOString() });
+    // deck doc itself stays tiny — members and pool both live in subcollections so
+    // a document with lots of member photos or lots of tracks never hits Firestore's 1MB limit
+    await CloudStore.put('decks', { id: deckId, deckId, artistName: artistNameVal, createdAt: new Date().toISOString() });
     let done = 0;
+    for(const m of members){
+      await CloudStore.put('decks/' + deckId + '/members', m);
+      done++;
+      if(done % 10 === 0) $('deckStatus').textContent = 'Publishing members... ' + done + ' / ' + members.length;
+    }
+    done = 0;
     for(const entry of pool){
       await CloudStore.put('decks/' + deckId + '/pool', entry);
       done++;
-      if(done % 50 === 0) $('deckStatus').textContent = 'Publishing... ' + done + ' / ' + pool.length + ' pool entries';
+      if(done % 50 === 0) $('deckStatus').textContent = 'Publishing pool... ' + done + ' / ' + pool.length + ' entries';
     }
     await setMeta('deckId', deckId);
     $('deckStatus').textContent = 'Published "' + artistNameVal + '" to the cloud — ' + members.length + ' members, ' + pool.length + ' pool entries. It will appear in Card Collection automatically on any signed-in device.';
