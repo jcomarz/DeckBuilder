@@ -1172,7 +1172,8 @@ async function fetchViaTVmaze(){
       tracksData.push({
         id: 'tvmaze_' + ep.id, name: ep.name || ('Episode ' + ep.number),
         album: 'Season ' + ep.season, seasonNum: ep.season, imageUrl, externalUrl: ep.url || null,
-        rating: (ep.rating && ep.rating.average) ? ep.rating.average : null
+        rating: (ep.rating && ep.rating.average) ? ep.rating.average : null,
+        summary: ep.summary ? ep.summary.replace(/<[^>]+>/g, '').trim() : null
       });
     });
     const allSeasons = Array.from(new Set(tracksData.map(t=>t.seasonNum))).sort((a,b)=>a-b);
@@ -1430,6 +1431,7 @@ async function mintPool(selectedIdx, mode){
         track:track.name, album:track.album, trackImageUrl:track.imageUrl,
         spotifyTrackId:track.id && !String(track.id).startsWith('itunes_') && !String(track.id).startsWith('tvmaze_') ? track.id : null,
         externalUrl: track.externalUrl || null,
+        summary: track.summary || null,
         previewUrl: track.previewUrl || null,
         memberId:member.id, memberName:member.name
       };
