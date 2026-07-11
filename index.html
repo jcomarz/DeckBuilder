@@ -238,8 +238,19 @@
     <label style="display:flex;align-items:center;gap:8px;margin-top:10px;"><input type="checkbox" id="includeSpecials"> include specials (season 0)</label>
   </div>
   <label style="display:flex;align-items:center;gap:8px;margin-top:8px;"><input type="checkbox" id="dedupeTracks" checked> skip duplicate titles</label>
+  <label id="popularityOptRow" style="display:none;align-items:center;gap:8px;margin-top:8px;"><input type="checkbox" id="fetchPopularity"> also fetch track popularity (extra API calls — needed for "favorite track per album")</label>
   <button id="fetchBtn" disabled>Fetch full discography</button>
   <div class="status" id="fetchStatus"></div>
+  <div id="seasonFilterPanel" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px;">
+    <label id="groupFilterLabel">Seasons shown <a href="#" id="seasonFilterAll" class="linkbtn">all</a> · <a href="#" id="seasonFilterNone" class="linkbtn">none</a></label>
+    <div class="difficulty-chips" id="seasonFilterChips" style="flex-wrap:wrap;margin-bottom:6px;"></div>
+    <div class="row" style="margin-top:4px;">
+      <div style="flex:none;width:80px;"><input type="number" id="topRatedCount" value="5" min="1" style="width:80px;"></div>
+      <button class="secondary" id="topRatedBtn" type="button" style="margin-top:0;">Keep top-N per shown group</button>
+      <button class="secondary" id="singleFavoriteBtn" type="button" style="margin-top:0;">🏆 One favorite per group</button>
+    </div>
+    <div class="status" id="seasonFilterStatus"></div>
+  </div>
   <div id="tracksWrap" style="display:none;margin-top:12px;">
     <div class="track-actions">
       <span><a class="linkbtn" href="#" id="selectAll">select all</a> · <a class="linkbtn" href="#" id="selectNone">none</a></span>
@@ -924,6 +935,7 @@ document.querySelectorAll('input[name=contentType]').forEach(r => r.addEventList
     ? 'Fetch the full cast automatically below, or upload/paste/crop faces manually per character.'
     : 'Upload, paste (Ctrl+V), or search Spotify for a face photo, then crop it to fit the bubble.';
   $('fetchCastBtn').style.display = isTv ? 'block' : 'none';
+  $('popularityOptRow').style.display = isTv ? 'none' : 'flex';
   $('musicSourceControls').style.display = isTv ? 'none' : 'block';
   $('tvSourceControls').style.display = isTv ? 'block' : 'none';
   $('credsPanel').style.display = isTv ? 'none' : 'block';
@@ -1026,6 +1038,8 @@ async function fetchAlbumTracks(){
         tracksData.push({id:'itunes_'+t.trackId, name:t.trackName, album:album.name, imageUrl:album.image, previewUrl:t.previewUrl||null});
       });
     }
+    seasonFilter = new Set(tracksData.map(t=>t.album)); // single album — no meaningful grouping, so just include everything and hide the panel
+    $('seasonFilterPanel').style.display = 'none';
     renderTracks();
     $('fetchStatus').textContent = tracksData.length + ' tracks pulled from "' + album.name + '".';
     $('mintBtn').disabled = false;
@@ -1157,16 +1171,82 @@ async function fetchViaTVmaze(){
       const imageUrl = ep.image ? (ep.image.original || ep.image.medium) : (show.image ? (show.image.original||show.image.medium) : null);
       tracksData.push({
         id: 'tvmaze_' + ep.id, name: ep.name || ('Episode ' + ep.number),
-        album: 'Season ' + ep.season, imageUrl, externalUrl: ep.url || null
+        album: 'Season ' + ep.season, seasonNum: ep.season, imageUrl, externalUrl: ep.url || null,
+        rating: (ep.rating && ep.rating.average) ? ep.rating.average : null
       });
     });
+    const allSeasons = Array.from(new Set(tracksData.map(t=>t.seasonNum))).sort((a,b)=>a-b);
+    seasonFilter = new Set(allSeasons); // default: every season included
+    renderSeasonFilter(allSeasons);
     renderTracks();
-    $('fetchStatus').textContent = tracksData.length + ' episodes pulled from ' + show.name + '.';
+    $('fetchStatus').textContent = tracksData.length + ' episodes pulled from ' + show.name + ' across ' + allSeasons.length + ' season(s).';
     $('mintBtn').disabled = false;
     $('mintAllBtn').disabled = false;
   }catch(e){ $('fetchStatus').textContent = 'Failed: ' + e.message; }
   finally{ $('fetchBtn').disabled = false; }
 }
+
+let seasonFilter = null; // Set of included group keys (season numbers for TV, album names for Music) — null means no fetch yet
+function groupKeyOf(t){ return t.seasonNum != null ? t.seasonNum : t.album; }
+function groupLabelOf(t){ return t.seasonNum != null ? 'S' + t.seasonNum : t.album; }
+function scoreOf(t){ return t.seasonNum != null ? t.rating : t.popularity; }
+function isTvMode(){ return document.querySelector('input[name=contentType]:checked').value === 'tv'; }
+
+function renderSeasonFilter(allGroups){
+  const wrap = $('seasonFilterChips');
+  if(!wrap) return;
+  const label = isTvMode() ? 'Seasons' : 'Albums';
+  $('groupFilterLabel').innerHTML = label + ' shown <a href="#" id="seasonFilterAll" class="linkbtn">all</a> · <a href="#" id="seasonFilterNone" class="linkbtn">none</a>';
+  $('seasonFilterAll').addEventListener('click', e => { e.preventDefault(); seasonFilter = new Set(allGroups); renderSeasonFilter(allGroups); renderTracks(); });
+  $('seasonFilterNone').addEventListener('click', e => { e.preventDefault(); seasonFilter = new Set(); renderSeasonFilter(allGroups); renderTracks(); });
+  $('topRatedBtn').textContent = 'Keep top-N per shown ' + (isTvMode() ? 'season' : 'album');
+  $('singleFavoriteBtn').textContent = '🏆 One favorite per ' + (isTvMode() ? 'season' : 'album');
+  if(!allGroups || allGroups.length <= 1){ $('seasonFilterPanel').style.display = 'none'; return; }
+  $('seasonFilterPanel').style.display = 'block';
+  wrap.innerHTML = '';
+  allGroups.forEach(g => {
+    const sampleTrack = tracksData.find(t => groupKeyOf(t) === g);
+    const chip = document.createElement('div');
+    chip.className = 'chip' + (seasonFilter.has(g) ? ' active' : '');
+    chip.textContent = sampleTrack ? groupLabelOf(sampleTrack) : g;
+    chip.style.flex = 'none';
+    chip.style.minWidth = '48px';
+    chip.style.padding = '8px 10px';
+    chip.addEventListener('click', () => {
+      if(seasonFilter.has(g)) seasonFilter.delete(g); else seasonFilter.add(g);
+      renderTracks();
+      updateSeasonFilterStatus();
+    });
+    wrap.appendChild(chip);
+  });
+  updateSeasonFilterStatus();
+}
+function updateSeasonFilterStatus(){
+  const visibleCount = tracksData.filter(t => seasonFilter.has(groupKeyOf(t))).length;
+  const unit = isTvMode() ? 'episodes' : 'tracks';
+  const groupUnit = isTvMode() ? 'season(s)' : 'album(s)';
+  $('seasonFilterStatus').textContent = seasonFilter.size + ' ' + groupUnit + ' shown · ' + visibleCount + ' / ' + tracksData.length + ' ' + unit + ' visible below.';
+}
+function keepTopNPerGroup(n){
+  const byGroup = {};
+  tracksData.forEach((t,i) => { if(seasonFilter.has(groupKeyOf(t)) && scoreOf(t) != null){ const g = groupKeyOf(t); (byGroup[g] = byGroup[g]||[]).push({i, score:scoreOf(t)}); } });
+  const groupsWithScores = Object.keys(byGroup).length;
+  const scoreWord = isTvMode() ? 'rating' : 'popularity';
+  if(groupsWithScores === 0){
+    $('seasonFilterStatus').textContent = 'No ' + scoreWord + ' data available for what\'s currently shown' + (isTvMode() ? ' — TVmaze doesn\'t rate every episode.' : ' — check "also fetch track popularity" above, then re-fetch, since popularity isn\'t pulled by default.');
+    return;
+  }
+  document.querySelectorAll('.tchk').forEach(c => c.checked = false);
+  Object.values(byGroup).forEach(list => {
+    list.sort((a,b) => b.score - a.score);
+    list.slice(0, n).forEach(({i}) => { const box = document.querySelector('.tchk[data-i="'+i+'"]'); if(box) box.checked = true; });
+  });
+  updateTrackCount();
+  const groupWord = isTvMode() ? 'season(s)' : 'album(s)';
+  $('seasonFilterStatus').textContent = 'Checked the top ' + n + ' per ' + groupWord.replace('(s)','') + ' (' + groupsWithScores + ' ' + groupWord + ' had ' + scoreWord + ' data) — everything else unchecked.';
+}
+$('topRatedBtn').addEventListener('click', () => { const n = parseInt($('topRatedCount').value) || 5; keepTopNPerGroup(n); });
+$('singleFavoriteBtn').addEventListener('click', () => keepTopNPerGroup(1));
 
 async function fetchViaItunes(){
   const artist = $('artistName').value.trim();
@@ -1210,6 +1290,9 @@ async function fetchViaItunes(){
       }catch(e){ /* skip a release that fails, keep going */ }
       done++;
     }
+    const allAlbumGroups = Array.from(new Set(tracksData.map(t=>t.album)));
+    seasonFilter = new Set(allAlbumGroups);
+    renderSeasonFilter(allAlbumGroups);
     renderTracks();
     $('fetchStatus').textContent = tracksData.length + ' tracks pulled from ' + uniqueAlbums.length + ' releases (via iTunes).';
     $('mintBtn').disabled = false;
@@ -1264,13 +1347,30 @@ async function fetchViaSpotify(){
           if(excludeInst && instRegex.test(t.name)) return;
           const key = t.name.toLowerCase().replace(/\s*\(.*?\)\s*/g,'').trim();
           if(dedupe){ if(seenTrack.has(key)) return; seenTrack.add(key); }
-          tracksData.push({id:t.id, name:t.name, album:album.name, imageUrl});
+          tracksData.push({id:t.id, name:t.name, album:album.name, imageUrl, popularity:null});
         });
       }catch(e){ /* skip a release that fails, keep going */ }
       done++;
       $('fetchStatus').textContent = 'Fetching tracks... ' + done + ' / ' + albums.length + ' releases (' + tracksData.length + ' tracks so far)';
       await sleep(200);
     }
+
+    if($('fetchPopularity').checked && tracksData.length){
+      $('fetchStatus').textContent = 'Fetching popularity scores...';
+      for(let i=0; i<tracksData.length; i+=50){
+        const chunk = tracksData.slice(i, i+50);
+        try{
+          const res = await spotifyGet('https://api.spotify.com/v1/tracks?ids=' + chunk.map(t=>t.id).join(','), msg => $('fetchStatus').textContent = msg);
+          (res.tracks||[]).forEach((full, j) => { if(full) chunk[j].popularity = full.popularity; });
+        }catch(e){ /* skip this batch, keep going */ }
+        $('fetchStatus').textContent = 'Fetching popularity... ' + Math.min(i+50, tracksData.length) + ' / ' + tracksData.length;
+        await sleep(250);
+      }
+    }
+
+    const allAlbumGroups = Array.from(new Set(tracksData.map(t=>t.album)));
+    seasonFilter = new Set(allAlbumGroups);
+    renderSeasonFilter(allAlbumGroups);
     renderTracks();
     $('fetchStatus').textContent = tracksData.length + ' tracks pulled from ' + albums.length + ' releases.';
     $('mintBtn').disabled = false;
@@ -1283,12 +1383,14 @@ function renderTracks(){
   const list = $('trackList');
   list.innerHTML = '';
   tracksData.forEach((t,i) => {
+    if(seasonFilter && !seasonFilter.has(groupKeyOf(t))) return; // skip whatever season/album the user filtered out
     const row = document.createElement('div');
     row.className = 'track';
+    const ratingTag = t.rating != null ? ` · ★${t.rating}` : '';
     row.innerHTML = `
       <input type="checkbox" class="tchk" data-i="${i}" checked>
       ${t.imageUrl ? `<img src="${t.imageUrl}">` : '<div style="width:34px;height:34px;background:#222;border-radius:5px;"></div>'}
-      <div class="meta"><div class="t">${escapeHtml(t.name)}</div><div class="a">${escapeHtml(t.album)}</div></div>
+      <div class="meta"><div class="t">${escapeHtml(t.name)}</div><div class="a">${escapeHtml(t.album)}${ratingTag}</div></div>
     `;
     list.appendChild(row);
   });
@@ -1297,7 +1399,8 @@ function renderTracks(){
 }
 function updateTrackCount(){
   const n = document.querySelectorAll('.tchk:checked').length;
-  $('trackCount').textContent = n + ' / ' + tracksData.length + ' selected';
+  const visible = document.querySelectorAll('.tchk').length;
+  $('trackCount').textContent = n + ' / ' + visible + ' selected' + (visible !== tracksData.length ? ' (' + tracksData.length + ' total, season filter active)' : '');
 }
 $('selectAll').addEventListener('click', e => {e.preventDefault(); document.querySelectorAll('.tchk').forEach(c=>c.checked=true); updateTrackCount();});
 $('selectNone').addEventListener('click', e => {e.preventDefault(); document.querySelectorAll('.tchk').forEach(c=>c.checked=false); updateTrackCount();});
@@ -1347,7 +1450,9 @@ $('mintBtn').addEventListener('click', () => {
   mintPool(selectedIdx, mode);
 });
 $('mintAllBtn').addEventListener('click', () => {
-  const allIdx = tracksData.map((_, i) => i);
+  const allIdx = tracksData
+    .map((_, i) => i)
+    .filter(i => !seasonFilter || seasonFilter.has(groupKeyOf(tracksData[i])));
   mintPool(allIdx, 'all');
 });
 $('clearPoolBtn').addEventListener('click', async () => {
