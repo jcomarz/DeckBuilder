@@ -58,6 +58,7 @@
   .photoThumb img{width:100%;height:100%;border-radius:50%;object-fit:cover;border:2px solid var(--line);cursor:pointer;}
   .photoThumb:hover img{border-color:var(--accent);}
   .photoDel{position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;background:#3a1a24;color:#f78ca2;border:1px solid #5a2536;font-size:9px;line-height:1;cursor:pointer;padding:0;margin:0;}
+  .slotNum{position:absolute;bottom:-4px;left:-4px;width:15px;height:15px;border-radius:50%;background:var(--accent);color:#06251f;font-size:8px;font-weight:800;display:flex;align-items:center;justify-content:center;}
   .mbtnrow{display:flex;gap:4px;}
   .mbtnrow button{flex:1;margin:0;padding:6px 4px;font-size:10px;}
   .searchResults{display:flex;flex-wrap:wrap;justify-content:center;gap:4px;margin-top:6px;}
@@ -151,6 +152,7 @@
   <div class="row" style="gap:16px;">
     <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="contentType" value="music" checked> 🎵 Music (artist / album / song / member)</label>
     <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="contentType" value="tv"> 📺 TV show (show / season / episode / character)</label>
+    <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="contentType" value="actor"> 🎬 Actor filmography (actor / films they're in / character played)</label>
   </div>
   <div class="row" style="margin-top:12px;">
     <div><label id="deckNameLabel">Deck / artist name</label><input type="text" id="deckName" placeholder="e.g. aespa">
@@ -180,6 +182,14 @@
   <div class="status" id="credStatus"></div>
 </div>
 
+<div class="panel" id="tmdbCredsPanel" style="display:none;">
+  <h2>1 · TMDB API key</h2>
+  <div class="status">Free — register at <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener" class="linkbtn">themoviedb.org/settings/api</a>, then paste your "API Read Access Token" (or the older v3 API key) below.</div>
+  <input type="password" id="tmdbApiKey" placeholder="TMDB API key / read access token" style="margin-top:10px;">
+  <button id="tmdbConnectBtn" type="button">Save key</button>
+  <div class="status" id="tmdbCredStatus"></div>
+</div>
+
 <div class="panel">
   <h2 id="membersHeading">2 · Member face bubbles</h2>
   <div class="status" id="memberStatus">Upload, paste (Ctrl+V), or search Spotify for a face photo, then crop it to fit the bubble.</div>
@@ -198,6 +208,13 @@
 <div class="panel">
   <h2 id="discographyHeading">3 · Pull discography</h2>
   <div class="row"><div><label id="artistNameLabel">Artist</label><input type="text" id="artistName" value="aespa"></div></div>
+  <div id="actorSourceControls" style="display:none;">
+    <button class="secondary" id="searchActorBtn" type="button">🔍 Search TMDB actors</button>
+    <div class="status" id="actorSearchStatus"></div>
+    <div id="actorPicker" style="display:none;margin-top:10px;"></div>
+    <div class="status" id="selectedActorStatus"></div>
+    <div class="status">Pulls every film/show credit for this actor, with the character name they played in each — the actor's own face is used for every card.</div>
+  </div>
   <div id="musicSourceControls">
   <label style="margin-top:12px;">Pull</label>
   <div class="row" style="gap:16px;">
@@ -504,8 +521,15 @@ $('forgetCredsBtn').addEventListener('click', () => {
 
 // ---------------- members ----------------
 function getMemberImgs(m){
-  if(m.imgs && m.imgs.length) return m.imgs;
-  if(m.img) return [m.img];
+  // normalizes to [{id, src}] regardless of legacy formats (single .img string, or old plain-string .imgs array)
+  if(m.imgs && m.imgs.length){
+    if(typeof m.imgs[0] === 'string'){
+      // migrate old plain-string array to stable-id objects, once
+      m.imgs = m.imgs.map((src,i) => ({id:'p_'+m.id+'_'+i+'_'+Date.now(), src}));
+    }
+    return m.imgs;
+  }
+  if(m.img) return [{id:'p_'+m.id+'_legacy', src:m.img}];
   return [];
 }
 function renderMembers(){
@@ -515,14 +539,15 @@ function renderMembers(){
     const imgs = getMemberImgs(m);
     const slot = document.createElement('div');
     slot.className = 'member-slot';
-    const photoStrip = imgs.map((src,i) => `
-      <div class="photoThumb" data-id="${m.id}" data-i="${i}">
-        <img src="${src}">
-        <button class="photoDel" data-id="${m.id}" data-i="${i}" type="button" title="Remove this photo">✕</button>
+    const photoStrip = imgs.map((p,i) => `
+      <div class="photoThumb" data-id="${m.id}" data-photo-id="${p.id}">
+        <img src="${p.src}">
+        <span class="slotNum">${i+1}</span>
+        <button class="photoDel" data-id="${m.id}" data-photo-id="${p.id}" type="button" title="Remove this photo">✕</button>
       </div>
     `).join('');
     slot.innerHTML = `
-      ${imgs.length ? `<img src="${imgs[0]}" class="face" data-id="${m.id}" title="Click to edit crop">` : `<div class="ph" data-id="${m.id}">no face</div>`}
+      ${imgs.length ? `<img src="${imgs[0].src}" class="face" data-id="${m.id}" title="Click to edit crop">` : `<div class="ph" data-id="${m.id}">no face</div>`}
       <div class="photoCount">${imgs.length} photo${imgs.length===1?'':'s'}${imgs.length>1?' — randomized per card':''}</div>
       <input type="text" data-id="${m.id}" class="mname" value="${escapeHtml(m.name)}">
       <input type="file" accept="image/*" data-id="${m.id}" class="mfile" hidden>
@@ -534,6 +559,7 @@ function renderMembers(){
       <button class="ghost mWiki" data-id="${m.id}" type="button" style="width:100%;margin-top:6px;">+ Search Wikipedia for face</button>
       <div class="searchResults" id="sr_${m.id}" style="display:none;"></div>
       ${imgs.length ? `<div class="photoStrip">${photoStrip}</div>` : ''}
+      <div class="status" style="text-align:center;">Editing or replacing a photo here updates every existing card that used it — use "🔄 Update graphics" in Card Collection to apply it.</div>
       <label class="chk"><input type="checkbox" class="minclude" data-id="${m.id}" ${m.include!==false?'checked':''}> include</label>
     `;
     grid.appendChild(slot);
@@ -563,19 +589,18 @@ function renderMembers(){
     const id = e.target.dataset.id;
     const m = members.find(x=>x.id===id);
     const imgs = getMemberImgs(m);
-    if(imgs.length) openEditModal(id, 0); else grid.querySelector('.mfile[data-id="'+id+'"]').click();
+    if(imgs.length) openEditModal(id, imgs[0].id); else grid.querySelector('.mfile[data-id="'+id+'"]').click();
   }));
   grid.querySelectorAll('.photoThumb img').forEach(img => img.addEventListener('click', e => {
     const wrap = e.target.closest('.photoThumb');
-    openEditModal(wrap.dataset.id, parseInt(wrap.dataset.i));
+    openEditModal(wrap.dataset.id, wrap.dataset.photoId);
   }));
   grid.querySelectorAll('.photoDel').forEach(btn => btn.addEventListener('click', async e => {
     e.stopPropagation();
     const m = members.find(x=>x.id===e.target.dataset.id);
-    const i = parseInt(e.target.dataset.i);
     const imgs = getMemberImgs(m);
-    imgs.splice(i,1);
-    m.imgs = imgs; delete m.img;
+    m.imgs = imgs.filter(p => p.id !== e.target.dataset.photoId);
+    delete m.img;
     await idbPut('members', m);
     renderMembers();
   }));
@@ -586,11 +611,12 @@ async function addMemberPhoto(memberId, dataUrl){
   const m = members.find(x=>x.id===memberId);
   if(!m) return;
   const imgs = getMemberImgs(m);
-  imgs.push(dataUrl);
+  const newPhoto = {id:'p_'+memberId+'_'+Date.now()+Math.random().toString(36).slice(2,6), src:dataUrl};
+  imgs.push(newPhoto);
   m.imgs = imgs; delete m.img;
   await idbPut('members', m);
   renderMembers();
-  openEditModal(memberId, imgs.length-1);
+  openEditModal(memberId, newPhoto.id);
 }
 document.addEventListener('paste', async (e) => {
   if(!pasteTargetId) return;
@@ -730,10 +756,11 @@ async function ensureCardFont(){
   })();
   return fontReady;
 }
-function memberPhoto(member){
+function memberPhoto(member, forcedId){
   if(!member) return null;
-  const pool = (member.imgs && member.imgs.length) ? member.imgs : (member.img ? [member.img] : []);
+  const pool = getMemberImgs(member);
   if(pool.length === 0) return null;
+  if(forcedId){ const found = pool.find(p=>p.id===forcedId); if(found) return found; }
   return pool[Math.floor(Math.random()*pool.length)];
 }
 function drawSparkle(ctx, x, y, size, color){
@@ -747,7 +774,7 @@ function drawSparkle(ctx, x, y, size, color){
   ctx.closePath(); ctx.fill();
   ctx.restore();
 }
-async function bakeArt(track, member, grade){
+async function bakeArt(track, member, grade, forcedPhotoId){
   await ensureCardFont();
   const W=340,H=476;
   const canvas = document.createElement('canvas'); canvas.width=W; canvas.height=H;
@@ -790,11 +817,11 @@ async function bakeArt(track, member, grade){
   ctx.fillStyle = plateGrad; ctx.fillRect(0,plateTop,W,H-plateTop);
 
   // member portrait — large, centered hero shot, glow/sparkle intensity scales continuously with grade
-  const photo = memberPhoto(member);
+  const photoObj = memberPhoto(member, forcedPhotoId);
   const cx = W/2, cy = H*0.29, r = 88;
-  if(photo){
+  if(photoObj){
     try{
-      const face = await loadImg(photo);
+      const face = await loadImg(photoObj.src);
       const glowR = r * (1.15 + gv.glowMult*0.3);
       const glow = ctx.createRadialGradient(cx,cy,r*0.8,cx,cy,glowR);
       glow.addColorStop(0, gColor + gv.ringAlpha);
@@ -846,7 +873,7 @@ async function bakeArt(track, member, grade){
   ctx.font='700 12px Poppins, Segoe UI, sans-serif'; ctx.fillStyle='rgba(255,255,255,0.78)';
   wrapTextCenter(ctx, track.album, W/2, H-12, W-50, 16);
   ctx.textAlign='left';
-  return canvas.toDataURL('image/png');
+  return { art: canvas.toDataURL('image/png'), photoId: photoObj ? photoObj.id : null };
 }
 function wrapTextCenter(ctx, text, cx, y, maxWidth, lineHeight){
   const words = text.split(' '); let line=''; const lines=[];
@@ -907,6 +934,7 @@ function jsonp(url){
 $('fetchBtn').addEventListener('click', () => {
   const contentType = document.querySelector('input[name=contentType]:checked').value;
   if(contentType === 'tv'){ fetchViaTVmaze(); return; }
+  if(contentType === 'actor'){ fetchActorFilmography(); return; }
   const scope = document.querySelector('input[name=musicScope]:checked').value;
   const source = document.querySelector('input[name=fetchSource]:checked').value;
   if(scope === 'album'){ fetchAlbumTracks(); return; }
@@ -925,24 +953,33 @@ document.querySelectorAll('input[name=musicScope]').forEach(r => r.addEventListe
   $('fetchBtn').disabled = isAlbum ? !selectedAlbum : !token;
 }));
 document.querySelectorAll('input[name=contentType]').forEach(r => r.addEventListener('change', e => {
-  const isTv = e.target.value === 'tv';
-  $('deckNameLabel').textContent = isTv ? 'Deck / show name' : 'Deck / artist name';
-  $('artistNameLabel').textContent = isTv ? 'Show' : 'Artist';
-  $('artistName').value = isTv ? 'Breaking Bad' : 'aespa';
-  $('membersHeading').textContent = isTv ? '2 · Character faces' : '2 · Member face bubbles';
-  $('discographyHeading').textContent = isTv ? '3 · Pull episodes' : '3 · Pull discography';
+  const mode = e.target.value; // 'music' | 'tv' | 'actor'
+  const isTv = mode === 'tv';
+  const isActor = mode === 'actor';
+  $('deckNameLabel').textContent = isTv ? 'Deck / show name' : isActor ? 'Deck / actor name' : 'Deck / artist name';
+  $('artistNameLabel').textContent = isTv ? 'Show' : isActor ? 'Actor' : 'Artist';
+  $('artistName').value = isTv ? 'Breaking Bad' : isActor ? 'Michael B. Jordan' : 'aespa';
+  $('membersHeading').textContent = isTv ? '2 · Character faces' : isActor ? '2 · Actor photo' : '2 · Member face bubbles';
+  $('discographyHeading').textContent = isTv ? '3 · Pull episodes' : isActor ? '3 · Pull filmography' : '3 · Pull discography';
   $('memberStatus').textContent = isTv
     ? 'Fetch the full cast automatically below, or upload/paste/crop faces manually per character.'
+    : isActor
+    ? 'Search TMDB for the actor below to auto-fill their photo, or upload/paste/crop one manually.'
     : 'Upload, paste (Ctrl+V), or search Spotify for a face photo, then crop it to fit the bubble.';
   $('fetchCastBtn').style.display = isTv ? 'block' : 'none';
-  $('popularityOptRow').style.display = isTv ? 'none' : 'flex';
-  $('musicSourceControls').style.display = isTv ? 'none' : 'block';
+  $('popularityOptRow').style.display = (!isTv && !isActor) ? 'flex' : 'none';
+  $('musicSourceControls').style.display = (!isTv && !isActor) ? 'block' : 'none';
   $('tvSourceControls').style.display = isTv ? 'block' : 'none';
-  $('credsPanel').style.display = isTv ? 'none' : 'block';
+  $('actorSourceControls').style.display = isActor ? 'block' : 'none';
+  $('credsPanel').style.display = (!isTv && !isActor) ? 'block' : 'none';
+  $('tmdbCredsPanel').style.display = isActor ? 'block' : 'none';
   const scope = document.querySelector('input[name=musicScope]:checked').value;
   if(isTv){
     $('fetchBtn').textContent = 'Fetch full episode list';
     $('fetchBtn').disabled = !selectedTVShow;
+  } else if(isActor){
+    $('fetchBtn').textContent = 'Fetch full filmography';
+    $('fetchBtn').disabled = !selectedActor;
   } else if(scope === 'album'){
     $('fetchBtn').textContent = 'Fetch selected album';
     $('fetchBtn').disabled = !selectedAlbum;
@@ -1048,6 +1085,108 @@ async function fetchAlbumTracks(){
   finally{ $('fetchBtn').disabled = false; }
 }
 
+
+let selectedActor = null;
+let actorCandidates = [];
+function tmdbKey(){ return localStorage.getItem('cf_tmdb_key') || ''; }
+$('tmdbConnectBtn').addEventListener('click', () => {
+  const key = $('tmdbApiKey').value.trim();
+  if(!key){ $('tmdbCredStatus').textContent = 'Paste your TMDB API key first.'; return; }
+  localStorage.setItem('cf_tmdb_key', key);
+  $('tmdbCredStatus').textContent = 'Saved — key stays only in this browser.';
+});
+function tmdbFetch(path){
+  const key = tmdbKey();
+  const sep = path.includes('?') ? '&' : '?';
+  return fetch('https://api.themoviedb.org/3' + path + sep + 'api_key=' + encodeURIComponent(key)).then(r => {
+    if(!r.ok) throw new Error('HTTP ' + r.status + ' — check your TMDB API key');
+    return r.json();
+  });
+}
+async function searchTMDBActors(){
+  if(!tmdbKey()){ $('actorSearchStatus').textContent = 'Save a TMDB API key above first.'; return; }
+  const q = $('artistName').value.trim();
+  if(!q){ $('actorSearchStatus').textContent = 'Type an actor name first.'; return; }
+  $('actorSearchStatus').textContent = 'Searching TMDB...';
+  $('actorPicker').style.display = 'none';
+  try{
+    const res = await tmdbFetch('/search/person?query=' + encodeURIComponent(q));
+    actorCandidates = (res.results || []).slice(0, 8);
+    if(actorCandidates.length === 0){ $('actorSearchStatus').textContent = 'No matches found for "' + q + '".'; return; }
+    renderActorPicker();
+    $('actorSearchStatus').textContent = actorCandidates.length + ' match(es) — pick the right person.';
+  }catch(e){ $('actorSearchStatus').textContent = 'Search failed: ' + e.message; }
+}
+$('searchActorBtn').addEventListener('click', searchTMDBActors);
+function renderActorPicker(){
+  const wrap = $('actorPicker');
+  wrap.innerHTML = '';
+  actorCandidates.forEach((p, i) => {
+    const imgUrl = p.profile_path ? 'https://image.tmdb.org/t/p/w185' + p.profile_path : null;
+    const knownFor = (p.known_for || []).map(k => k.title || k.name).filter(Boolean).slice(0,2).join(', ');
+    const el = document.createElement('div');
+    el.className = 'showPickItem';
+    el.innerHTML = `
+      ${imgUrl ? `<img src="${imgUrl}" style="width:46px;height:64px;">` : `<div style="width:46px;height:64px;background:var(--ink);border-radius:6px;"></div>`}
+      <div class="spInfo"><div class="spTitle">${escapeHtml(p.name)}</div><div class="spMeta">${escapeHtml(knownFor || p.known_for_department || '')}</div></div>
+    `;
+    el.addEventListener('click', () => selectActor(i));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'block';
+}
+async function selectActor(i){
+  selectedActor = actorCandidates[i];
+  $('actorPicker').style.display = 'none';
+  $('selectedActorStatus').innerHTML = `Selected: <b>${escapeHtml(selectedActor.name)}</b> — <a href="#" id="changeActorLink" class="linkbtn">change</a>`;
+  $('changeActorLink').addEventListener('click', e => { e.preventDefault(); $('actorPicker').style.display = 'block'; });
+  if(!$('deckName').value.trim()) $('deckName').value = selectedActor.name;
+  $('fetchBtn').disabled = false;
+
+  if(selectedActor.profile_path && members.length === 0){
+    try{
+      const dataUrl = await urlToDataURL('https://image.tmdb.org/t/p/w500' + selectedActor.profile_path);
+      const m = {id:'m_'+Date.now()+Math.random().toString(36).slice(2,6), name:selectedActor.name, imgs:[{id:'p_actor_'+Date.now(), src:dataUrl}], include:true};
+      members.push(m);
+      await idbPut('members', m);
+      renderMembers();
+      $('memberStatus').textContent = 'Auto-filled ' + selectedActor.name + '\'s photo from TMDB. Crop/replace it like any other face if you want.';
+    }catch(e){ /* face fetch failing shouldn't block the rest of the flow */ }
+  }
+}
+async function fetchActorFilmography(){
+  if(!selectedActor){ $('actorSearchStatus').textContent = 'Search and pick an actor first (above).'; return; }
+  $('fetchStatus').textContent = 'Fetching filmography for ' + selectedActor.name + '...';
+  $('fetchBtn').disabled = true;
+  try{
+    const credits = await tmdbFetch('/person/' + selectedActor.id + '/combined_credits');
+    const dedupe = $('dedupeTracks').checked;
+    const seenTitle = new Set();
+    tracksData = [];
+    (credits.cast || []).forEach(c => {
+      const title = c.title || c.name;
+      if(!title) return;
+      if(dedupe){ const key = title.toLowerCase(); if(seenTitle.has(key)) return; seenTitle.add(key); }
+      const year = (c.release_date || c.first_air_date || '').slice(0,4);
+      const imageUrl = c.poster_path ? 'https://image.tmdb.org/t/p/w500' + c.poster_path : null;
+      tracksData.push({
+        id: 'tmdb_' + c.credit_id, name: title,
+        album: c.media_type === 'tv' ? 'TV Roles' : 'Films',
+        imageUrl, characterOverride: c.character || null,
+        releaseYear: year || null
+      });
+    });
+    tracksData.sort((a,b) => (b.releaseYear||'0') - (a.releaseYear||'0'));
+    const allGroups = Array.from(new Set(tracksData.map(t=>t.album)));
+    seasonFilter = new Set(allGroups);
+    renderSeasonFilter(allGroups);
+    renderTracks();
+    $('fetchStatus').textContent = tracksData.length + ' credits pulled for ' + selectedActor.name + '.';
+    $('mintBtn').disabled = false;
+    $('mintAllBtn').disabled = false;
+  }catch(e){ $('fetchStatus').textContent = 'Failed: ' + e.message; }
+  finally{ $('fetchBtn').disabled = false; }
+}
 
 let selectedTVShow = null;
 let showCandidates = [];
@@ -1433,7 +1572,7 @@ async function mintPool(selectedIdx, mode){
         externalUrl: track.externalUrl || null,
         summary: track.summary || null,
         previewUrl: track.previewUrl || null,
-        memberId:member.id, memberName:member.name
+        memberId:member.id, memberName:track.characterOverride || member.name
       };
       newEntries.push(entry);
       made++;
@@ -1470,9 +1609,10 @@ $('previewBtn').addEventListener('click', async () => {
   $('previewWrap').style.display = 'block';
   $('previewImg').src = '';
   const entry = pool[Math.floor(Math.random()*pool.length)];
-  const member = members.find(m => m.id === entry.memberId) || {name:entry.memberName, img:null};
-  const art = await bakeArt({name:entry.track, album:entry.album, imageUrl:entry.trackImageUrl}, member);
-  $('previewImg').src = art;
+  const baseMember = members.find(m => m.id === entry.memberId) || {name:entry.memberName, imgs:[]};
+  const member = Object.assign({}, baseMember, {name: entry.memberName || baseMember.name});
+  const baked = await bakeArt({name:entry.track, album:entry.album, imageUrl:entry.trackImageUrl}, member);
+  $('previewImg').src = baked.art;
 });
 
 // ---------------- deck new/load/export ----------------
@@ -1655,22 +1795,23 @@ function editLayout(){
   $('editImg').style.left = s.offX + 'px';
   $('editImg').style.top = s.offY + 'px';
 }
-async function openEditModal(memberId, photoIndex){
+async function openEditModal(memberId, photoId){
   const m = members.find(x=>x.id===memberId);
   if(!m) return;
   const imgs = getMemberImgs(m);
-  if(photoIndex === undefined) photoIndex = imgs.length - 1;
-  if(!imgs[photoIndex]) return;
-  const img = await loadImg(imgs[photoIndex]);
+  if(!photoId && imgs.length) photoId = imgs[imgs.length-1].id;
+  const photo = imgs.find(p => p.id === photoId);
+  if(!photo) return;
+  const img = await loadImg(photo.src);
   const baseScale = Math.max(EDIT_STAGE/img.naturalWidth, EDIT_STAGE/img.naturalHeight);
   const zoom = 1.5;
   const dispW = img.naturalWidth*baseScale*zoom, dispH = img.naturalHeight*baseScale*zoom;
   editState = {
-    memberId, photoIndex, img, baseScale, zoom,
+    memberId, photoId, img, baseScale, zoom,
     offX: (EDIT_STAGE - dispW)/2, offY: (EDIT_STAGE - dispH)/2,
     dragging:false, lastX:0, lastY:0
   };
-  $('editImg').src = imgs[photoIndex];
+  $('editImg').src = photo.src;
   $('editZoom').value = 150;
   editLayout();
   $('editModalBg').classList.add('open');
@@ -1719,7 +1860,8 @@ $('editSave').addEventListener('click', async () => {
   const m = members.find(x=>x.id===s.memberId);
   if(m){
     const imgs = getMemberImgs(m);
-    imgs[s.photoIndex] = dataUrl;
+    const photo = imgs.find(p => p.id === s.photoId);
+    if(photo) photo.src = dataUrl;
     m.imgs = imgs; delete m.img;
     await idbPut('members', m);
     renderMembers();
