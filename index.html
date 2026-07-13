@@ -214,6 +214,14 @@
     <div id="actorPicker" style="display:none;margin-top:10px;"></div>
     <div class="status" id="selectedActorStatus"></div>
     <div class="status">Pulls every film/show credit for this actor, with the character name they played in each — the actor's own face is used for every card.</div>
+    <label style="margin-top:12px;">Bucket movies by</label>
+    <div class="row" style="gap:16px;">
+      <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="actorBucket" value="decade" checked> Decade (e.g. "2010s")</label>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="actorBucket" value="year"> Individual year</label>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;flex:none;"><input type="radio" name="actorBucket" value="none"> All in one bucket</label>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;"><input type="checkbox" id="excludeUnreleased" checked> exclude unreleased/upcoming (no release date or in the future)</label>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;"><input type="checkbox" id="excludeCameo" checked> exclude uncredited / voice-only / "self" cameos</label>
   </div>
   <div id="musicSourceControls">
   <label style="margin-top:12px;">Pull</label>
@@ -1175,27 +1183,45 @@ async function fetchActorFilmography(){
   try{
     const credits = await tmdbFetch('/person/' + selectedActor.id + '/combined_credits');
     const dedupe = $('dedupeTracks').checked;
+    const excludeUnreleased = $('excludeUnreleased').checked;
+    const excludeCameo = $('excludeCameo').checked;
+    const bucket = document.querySelector('input[name=actorBucket]:checked').value;
+    const cameoPattern = /\bself\b|uncredited|\(voice\)/i;
+    const today = new Date();
     const seenTitle = new Set();
     tracksData = [];
+    let skippedUnreleased = 0, skippedCameo = 0, skippedDupe = 0;
     (credits.cast || []).forEach(c => {
       const title = c.title || c.name;
       if(!title) return;
-      if(dedupe){ const key = title.toLowerCase(); if(seenTitle.has(key)) return; seenTitle.add(key); }
-      const year = (c.release_date || c.first_air_date || '').slice(0,4);
+      const dateStr = c.release_date || c.first_air_date;
+      if(excludeUnreleased && (!dateStr || new Date(dateStr) > today)){ skippedUnreleased++; return; }
+      if(excludeCameo && cameoPattern.test(c.character || '')){ skippedCameo++; return; }
+      if(dedupe){ const key = title.toLowerCase(); if(seenTitle.has(key)){ skippedDupe++; return; } seenTitle.add(key); }
+      const year = (dateStr || '').slice(0,4);
       const imageUrl = c.poster_path ? 'https://images.weserv.nl/?url=' + encodeURIComponent('image.tmdb.org/t/p/w500' + c.poster_path) : null;
+      let group;
+      if(bucket === 'decade') group = year ? (Math.floor(parseInt(year)/10)*10) + 's' : 'Unknown year';
+      else if(bucket === 'year') group = year || 'Unknown year';
+      else group = 'Filmography';
       tracksData.push({
         id: 'tmdb_' + c.credit_id, name: title,
-        album: c.media_type === 'tv' ? 'TV Roles' : 'Films',
+        album: group,
         imageUrl, characterOverride: c.character || null,
         releaseYear: year || null
       });
     });
     tracksData.sort((a,b) => (b.releaseYear||'0') - (a.releaseYear||'0'));
-    const allGroups = Array.from(new Set(tracksData.map(t=>t.album)));
+    const allGroups = Array.from(new Set(tracksData.map(t=>t.album)))
+      .sort((a,b) => { const na=parseInt(a), nb=parseInt(b); return (isNaN(nb)?0:nb) - (isNaN(na)?0:na); });
     seasonFilter = new Set(allGroups);
     renderSeasonFilter(allGroups);
     renderTracks();
-    $('fetchStatus').textContent = tracksData.length + ' credits pulled for ' + selectedActor.name + '.';
+    const skippedBits = [];
+    if(skippedUnreleased) skippedBits.push(skippedUnreleased + ' unreleased/upcoming');
+    if(skippedCameo) skippedBits.push(skippedCameo + ' uncredited/voice/self cameos');
+    if(skippedDupe) skippedBits.push(skippedDupe + ' duplicate titles');
+    $('fetchStatus').textContent = tracksData.length + ' credits pulled for ' + selectedActor.name + '.' + (skippedBits.length ? ' Skipped: ' + skippedBits.join(', ') + '.' : '');
     $('mintBtn').disabled = false;
     $('mintAllBtn').disabled = false;
   }catch(e){ $('fetchStatus').textContent = 'Failed: ' + e.message; }
